@@ -18,6 +18,7 @@
 #include "mqv.h"
 #include "ecp.h"
 #include "ec2n.h"
+#include "ecpm.h"
 
 NAMESPACE_BEGIN(CryptoPP)
 
