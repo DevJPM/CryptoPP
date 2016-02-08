@@ -3,13 +3,8 @@
 # cryptest.sh - written and placed in public domain by Jeffrey Walton and Uri Blumenthal.
 #               Copyright assigned to Crypto++ project.
 
-# This is a test script that can be used on some Linux/Unix/Apple machines
-# to automate building the library and running the self test with various
-# combinations of flags, options, and conditions.
-
-# Everything is tee'd into cryptest-result.txt. Change it to suite your taste. You
-# should be able to use `egrep -a "(Error|error|FAILED|Illegal)" cryptest-result.txt`
-# to quickly find errors and failures.
+# This is a test script that can be used on some Linux/Unix/Apple machines to automate building the
+# library and running the self test with various combinations of flags, options, and conditions.
 
 # Set to suite your taste
 TEST_RESULTS=cryptest-result.txt
@@ -34,8 +29,7 @@ touch "$WARN_RESULTS"
 #	ADD_CXXFLAGS=""
 #fi
 
-# Avoid CRYPTOPP_DATA_DIR
-OLD_CRYPTOPP_DATA_DIR="$CRYPTOPP_DATA_DIR"
+# Avoid CRYPTOPP_DATA_DIR in this shell
 unset CRYPTOPP_DATA_DIR
 
 # I can't seem to get the expression to work in sed on Apple. It returns the original CXXFLAGS.
@@ -91,7 +85,7 @@ if [ -z "$TMP" ]; then
 	TMP=/tmp
 fi
 
-$CXX -x c++ -Wno-deprecated-declarations adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+$CXX -x c++ -DCRYPTOPP_ADHOC_MAIN -Wno-deprecated-declarations adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 if [ "$?" -eq "0" ]; then
 	ADD_CXXFLAGS="$ADD_CXXFLAGS -Wno-deprecated-declarations"
 fi
@@ -113,7 +107,7 @@ else
 fi
 
 # Set to 0 if you don't have UBsan
-$CXX -x c++ -fsanitize=undefined adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+$CXX -x c++ -DCRYPTOPP_ADHOC_MAIN -fsanitize=undefined adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 if [ "$?" -eq "0" ] && [ "$IS_X86" -ne "0" ]; then
 	HAVE_UBSAN=1
 else
@@ -121,23 +115,17 @@ else
 fi
 
 # Set to 0 if you don't have Asan
-$CXX -x c++ -fsanitize=address adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+$CXX -x c++ -DCRYPTOPP_ADHOC_MAIN -fsanitize=address adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 if [ "$?" -eq "0" ] && [ "$IS_X86" -ne "0" ]; then
 	HAVE_ASAN=1
 else
 	HAVE_ASAN=0
 fi
 
-# Fixups... Cygwin and MinGW both advertise sanitizer support, but the program fails to link.
-if [ "$HAVE_UBSAN" -eq "0" ] || [ "$HAVE_ASAN" -eq "0" ] || [ "$IS_CYGWIN" -ne "0" ] || [ "$IS_MINGW" -ne "0" ]; then
-	HAVE_UBSAN=0
-	HAVE_ASAN=0
-fi
-
 # Set to 0 if you don't have Intel multiarch
 HAVE_INTEL_MULTIARCH=0
 if [ "$IS_DARWIN" -ne "0" ] && [ "$IS_X86" -ne "0" ]; then
-$CXX -x c++ -arch i386 -arch x86_64 -c adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+$CXX -x c++ -DCRYPTOPP_ADHOC_MAIN -arch i386 -arch x86_64 -c adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 if [ "$?" -eq "0" ]; then
 	HAVE_INTEL_MULTIARCH=1
 fi
@@ -146,9 +134,17 @@ fi
 # Set to 0 if you don't have PPC multiarch
 HAVE_PPC_MULTIARCH=0
 if [ "$IS_DARWIN" -ne "0" ] && [ "$IS_PPC" -ne "0" ]; then
-$CXX -x c++ -arch ppc -arch ppc64 -c adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+$CXX -x -DCRYPTOPP_ADHOC_MAIN c++ -arch ppc -arch ppc64 adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 if [ "$?" -eq "0" ]; then
 	HAVE_PPC_MULTIARCH=1
+fi
+fi
+
+HAVE_X32=0
+if [ "$IS_X64" -ne "0" ]; then
+$CXX -x -DCRYPTOPP_ADHOC_MAIN c++ -mx32 adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
+if [ "$?" -eq "0" ]; then
+	HAVE_X32=1
 fi
 fi
 
@@ -185,6 +181,48 @@ if [ "$IS_MINGW" -ne "0" ]; then
 	echo "IS_MINGW: $IS_MINGW" | tee -a "$TEST_RESULTS"
 fi
 
+############################################
+
+# CPU is logical count, memory is in MB. Low resource boards have
+#   fewer than 4 cores and 1GB or less memory. We use this to
+#   determine if we can build in parallel without an OOM kill.
+CPU_COUNT=1
+MEM_SIZE=1024
+
+if [ "$IS_DARWIN" -ne "0" ]; then
+	CPU_COUNT=$(sysctl -a 2>/dev/null | grep 'hw.availcpu' | head -1 | awk '{print $3}')
+	MEM_SIZE=$(sysctl -a 2>/dev/null | grep 'hw.memsize' | head -1 | awk '{print $3}')
+	MEM_SIZE=$(($MEM_SIZE/1024/1024))
+fi
+if [ "$IS_LINUX" -ne "0" ]; then
+	CPU_COUNT=$(cat /proc/cpuinfo | grep -c '^processor')
+	MEM_SIZE=$(cat /proc/meminfo | grep "MemTotal" | awk '{print $2}')
+	MEM_SIZE=$(($MEM_SIZE/1024))
+fi
+
+# Benchmarks expect frequency in GHz.
+CPU_FREQ=2.0
+if [ "$IS_LINUX" -ne "0" ] && [ -e "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq" ]; then
+	CPU_FREQ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)
+	CPU_FREQ=$(awk "BEGIN {print $CPU_FREQ/1024/1024}")
+fi
+if [ "$IS_DARWIN" -ne "0" ]; then
+	CPU_FREQ=$(sysctl -a 2>/dev/null | grep 'hw.cpufrequency' | head -1 | awk '{print $3}')
+	CPU_FREQ=$(awk "BEGIN {print $CPU_FREQ/1024/1024/1024}")
+fi
+
+echo | tee -a "$TEST_RESULTS"
+echo "CPU: $CPU_COUNT logical" | tee -a "$TEST_RESULTS"
+echo "FREQ: $CPU_FREQ GHz" | tee -a "$TEST_RESULTS"
+echo "MEM: $MEM_SIZE MB" | tee -a "$TEST_RESULTS"
+
+if [ "$CPU_COUNT" -ge "2" ] && [ "$MEM_SIZE" -ge "1280" ]; then
+    MAKEARGS=(-j "$CPU_COUNT")
+fi
+
+############################################
+
+echo | tee -a "$TEST_RESULTS"
 echo "User CXXFLAGS: $CXXFLAGS" | tee -a "$TEST_RESULTS"
 echo "Retained CXXFLAGS: $ADD_CXXFLAGS" | tee -a "$TEST_RESULTS"
 echo "Compiler:" $($CXX --version | head -1) | tee -a "$TEST_RESULTS"
@@ -204,10 +242,20 @@ echo "Testing: debug, default CXXFLAGS" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O2"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O2"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -229,10 +277,20 @@ echo "Testing: release, default CXXFLAGS" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -254,10 +312,20 @@ echo "Testing: debug, default CXXFLAGS, DISABLE_ASM" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O2 -DCRYPTOPP_DISABLE_ASM"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O2 -DCRYPTOPP_DISABLE_ASM"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -279,10 +347,20 @@ echo "Testing: release, default CXXFLAGS, DISABLE_ASM" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_DISABLE_ASM"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_DISABLE_ASM"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -305,10 +383,20 @@ if [ "$HAVE_CXX03" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -332,10 +420,20 @@ if [ "$HAVE_CXX03" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -359,10 +457,20 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -386,10 +494,78 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
+	else
+		./cryptest.exe v 2>&1 | tee -a "$TEST_RESULTS"
+		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+			echo "ERROR: failed to execute validation suite" | tee -a "$TEST_RESULTS"
+		fi
+		./cryptest.exe tv all 2>&1 | tee -a "$TEST_RESULTS"
+		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+			echo "ERROR: failed to execute test vectors" | tee -a "$TEST_RESULTS"
+		fi
+	fi
+fi
+
+############################################
+# X32 debug build
+if [ "$HAVE_X32" -ne "0" ]; then
+	echo
+	echo "************************************" | tee -a "$TEST_RESULTS"
+	echo "Testing: debug, X32" | tee -a "$TEST_RESULTS"
+	echo
+
+	unset CXXFLAGS
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+
+	export CXXFLAGS="-DDEBUG -g2 -O2 -mx32 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
+	else
+		./cryptest.exe v 2>&1 | tee -a "$TEST_RESULTS"
+		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+			echo "ERROR: failed to execute validation suite" | tee -a "$TEST_RESULTS"
+		fi
+		./cryptest.exe tv all 2>&1 | tee -a "$TEST_RESULTS"
+		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+			echo "ERROR: failed to execute test vectors" | tee -a "$TEST_RESULTS"
+		fi
+	fi
+fi
+
+############################################
+# X32 release build
+if [ "$HAVE_X32" -ne "0" ]; then
+	echo
+	echo "************************************" | tee -a "$TEST_RESULTS"
+	echo "Testing: release, X32" | tee -a "$TEST_RESULTS"
+	echo
+
+	unset CXXFLAGS
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -mx32 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -412,10 +588,20 @@ echo "Testing: debug, MAINTAIN_BACKWARDS_COMPATIBILITY" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O2 -DCRYPTOPP_MAINTAIN_BACKWARDS_COMPATIBILITY $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O2 -DCRYPTOPP_MAINTAIN_BACKWARDS_COMPATIBILITY $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -437,10 +623,20 @@ echo "Testing: release, MAINTAIN_BACKWARDS_COMPATIBILITY" | tee -a "$TEST_RESULT
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_MAINTAIN_BACKWARDS_COMPATIBILITY $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_MAINTAIN_BACKWARDS_COMPATIBILITY $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 fi
@@ -462,10 +658,20 @@ echo "Testing: debug, INIT_PRIORITY" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O1 -DCRYPTOPP_INIT_PRIORITY=250 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O1 -DCRYPTOPP_INIT_PRIORITY=250 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -487,10 +693,20 @@ echo "Testing: release, INIT_PRIORITY" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_INIT_PRIORITY=250 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_INIT_PRIORITY=250 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -513,10 +729,20 @@ echo "Testing: release, NO_UNALIGNED_DATA_ACCESS" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -539,10 +765,20 @@ echo "Testing: release, NO_BACKWARDS_COMPATIBILITY_562" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -564,10 +800,20 @@ echo "Testing: debug, NO_OS_DEPENDENCE" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O1 -DNO_OS_DEPENDENCE $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O1 -DNO_OS_DEPENDENCE $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -589,10 +835,20 @@ echo "Testing: release, NO_OS_DEPENDENCE" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 -DNO_OS_DEPENDENCE $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 -DNO_OS_DEPENDENCE $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -614,10 +870,20 @@ echo "Testing: debug, -O3 optimizations" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O3 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O3 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -639,10 +905,20 @@ echo "Testing: release, -O3 optimizations" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O3 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O3 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -664,10 +940,20 @@ echo "Testing: debug, -Os optimizations" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -Os $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -Os $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -689,10 +975,20 @@ echo "Testing: release, -Os optimizations" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -Os $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -Os $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -714,10 +1010,19 @@ echo "Testing: debug, dead code strip" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DDEBUG -g2 -O2 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DDEBUG -g2 -O2 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" lean 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE lean 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -739,10 +1044,20 @@ echo "Testing: release, dead code strip" | tee -a "$TEST_RESULTS"
 echo
 
 unset CXXFLAGS
+<<<<<<< HEAD
 $MAKE clean > /dev/null 2>&1
-export CXXFLAGS="-DNDEBUG -g2 -O2 $ADD_CXXFLAGS"
+=======
+"$MAKE" clean > /dev/null 2>&1
+rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+export CXXFLAGS="-DNDEBUG -g2 -O2 $ADD_CXXFLAGS"
+"$MAKE" "${MAKEARGS[@]}" lean 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 $MAKE lean 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 	echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 else
@@ -765,10 +1080,20 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$HAVE_UBSAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DDEBUG -g2 -O1 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DDEBUG -g2 -O1 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" ubsan | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE ubsan | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -792,10 +1117,20 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$HAVE_UBSAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" ubsan | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE ubsan | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -819,10 +1154,24 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$HAVE_ASAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
 	export CXXFLAGS="-DDEBUG -g2 -O1 -std=c++03 $ADD_CXXFLAGS"
 
 	$MAKE asan | tee -a "$TEST_RESULTS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+
+	export CXXFLAGS="-DDEBUG -g2 -O1 -std=c++03 $ADD_CXXFLAGS"
+
+	if [ "$CXX" == "clang++" ]; then
+		"$MAKE" "${MAKEARGS[@]}" asan | asan_symbolize | tee -a "$TEST_RESULTS"
+	else
+		"$MAKE" "${MAKEARGS[@]}" asan | tee -a "$TEST_RESULTS"
+	fi
+
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -846,10 +1195,24 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$HAVE_ASAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
 	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
 
 	$MAKE asan | tee -a "$TEST_RESULTS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+
+	if [ "$CXX" == "clang++" ]; then
+		"$MAKE" "${MAKEARGS[@]}" asan | asan_symbolize | tee -a "$TEST_RESULTS"
+	else
+		"$MAKE" "${MAKEARGS[@]}" asan | tee -a "$TEST_RESULTS"
+	fi
+
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -872,10 +1235,20 @@ if [ "$HAVE_CXX11" -ne "0" ] && [ "$HAVE_UBSAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" ubsan | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE ubsan | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -899,10 +1272,24 @@ if [ "$HAVE_CXX11" -ne "0" ] && [ "$HAVE_ASAN" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
 	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
 
 	$MAKE asan | tee -a "$TEST_RESULTS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+
+	if [ "$CXX" == "clang++" ]; then
+		"$MAKE" "${MAKEARGS[@]}" asan | asan_symbolize | tee -a "$TEST_RESULTS"
+	else
+		"$MAKE" "${MAKEARGS[@]}" asan | tee -a "$TEST_RESULTS"
+	fi
+
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -929,10 +1316,20 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$IS_DARWIN" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -stdlib=libc++ $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -stdlib=libc++ $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -956,10 +1353,20 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$IS_DARWIN" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -stdlib=libstdc++ $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -stdlib=libstdc++ $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -983,10 +1390,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -stdlib=libc++ $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -stdlib=libc++ $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1010,10 +1427,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -stdlib=libstdc++ $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -stdlib=libstdc++ $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1037,10 +1464,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_INTEL_MULTIARCH" -ne "0" ] && [ "$HAVE_C
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch i386 -arch x86_64 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch i386 -arch x86_64 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1075,10 +1512,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_INTEL_MULTIARCH" -ne "0" ] && [ "$HAVE_C
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch i386 -arch x86_64 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch i386 -arch x86_64 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1113,10 +1560,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_PPC_MULTIARCH" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch ppc -arch ppc64 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -arch ppc -arch ppc64 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1151,10 +1608,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_CXX03" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1184,10 +1651,20 @@ if [ "$IS_DARWIN" -ne "0" ] && [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1223,11 +1700,21 @@ if [ "$IS_DARWIN" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
 	export CXX="$XCODE_COMPILER"
-	export CXXFLAGS="-DNDEBUG -g2 -O2 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" CXX="$XCODE_COMPILER" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1255,11 +1742,15 @@ if [ "$HAVE_CXX03" -ne "0" ]; then
 	$MAKE clean > /dev/null 2>&1
 	export CXXFLAGS="-DNDEBUG -O3 -std=c++03 $ADD_CXXFLAGS"
 
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
-		./cryptest.exe b 1 2.4+1e9 2>&1 | tee -a "$BENCHMARK_RESULTS"
+		./cryptest.exe b 1 "$CPU_FREQ" 2>&1 | tee -a "$BENCHMARK_RESULTS"
 		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 			echo "ERROR: failed to execute benchmarks" | tee -a "$BENCHMARK_RESULTS"
 		fi
@@ -1275,14 +1766,24 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -O3 -std=c++11 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -O3 -std=c++11 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
-		./cryptest.exe b 1 2.4+1e9 2>&1 | tee -a "$BENCHMARK_RESULTS"
+		./cryptest.exe b 1 "$CPU_FREQ" 2>&1 | tee -a "$BENCHMARK_RESULTS"
 		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 			echo "ERROR: failed to execute benchmarks" | tee -a "$BENCHMARK_RESULTS"
 		fi
@@ -1301,10 +1802,20 @@ if [ "$IS_MINGW" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -g2 -O2 -DPREFER_BERKELEY_STYLE_SOCKETS -DNO_WINDOWS_STYLE_SOCKETS $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -g2 -O2 -DPREFER_BERKELEY_STYLE_SOCKETS -DNO_WINDOWS_STYLE_SOCKETS $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1328,10 +1839,20 @@ if [ "$IS_MINGW" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+	
+>>>>>>> refs/remotes/weidai11/master
 	export CXXFLAGS="-DNDEBUG -g2 -O2 -DPREFER_WINDOWS_STYLE_SOCKETS -DNO_BERKELEY_STYLE_SOCKETS $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
 
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1355,10 +1876,20 @@ if [ "$HAVE_CXX03" -ne "0" ] && [ "$HAVE_VALGRIND" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+	
+>>>>>>> refs/remotes/weidai11/master
 	export CXXFLAGS="-DNDEBUG -std=c++03 -g3 -O1 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
 
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1376,10 +1907,20 @@ if [ "$HAVE_VALGRIND" -ne "0" ] && [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 	
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
-	export CXXFLAGS="-DNDEBUG -std=c++11 -g3 -O1 $ADD_CXXFLAGS"
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
 
+>>>>>>> refs/remotes/weidai11/master
+	export CXXFLAGS="-DNDEBUG -std=c++11 -g3 -O1 $ADD_CXXFLAGS"
+	"$MAKE" "${MAKEARGS[@]}" static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+
+<<<<<<< HEAD
 	$MAKE static cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 	else
@@ -1400,15 +1941,24 @@ if [ "$HAVE_CXX03" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+>>>>>>> refs/remotes/weidai11/master
 
 	if [ "$CXX" == "g++" ]; then
-		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
+		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
 	else
-		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
+		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
 	fi
 
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$WARN_RESULTS"
 	fi
@@ -1421,15 +1971,24 @@ if [ "$HAVE_CXX03" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+>>>>>>> refs/remotes/weidai11/master
 
 	if [ "$CXX" == "g++" ]; then
-		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
+		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
 	else
-		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
+		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++03 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -DCRYPTOPP_NO_UNALIGNED_DATA_ACCESS -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
 	fi
 
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "$?" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$WARN_RESULTS"
 	fi
@@ -1447,7 +2006,12 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+>>>>>>> refs/remotes/weidai11/master
 
 	if [ "$CXX" == "g++" ]; then
 		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++11 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
@@ -1455,7 +2019,11 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 		export CXXFLAGS="-DDEBUG -g2 -O2 -std=c++11 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
 	fi
 
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$WARN_RESULTS"
 	fi
@@ -1468,7 +2036,12 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+>>>>>>> refs/remotes/weidai11/master
 
 	if [ "$CXX" == "g++" ]; then
 		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-aliasing=3 -Wstrict-overflow -Waggressive-loop-optimizations -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security -Wtrampolines"
@@ -1476,7 +2049,11 @@ if [ "$HAVE_CXX11" -ne "0" ]; then
 		export CXXFLAGS="-DNDEBUG -g2 -O2 -std=c++11 -DCRYPTOPP_NO_BACKWARDS_COMPATIBILITY_562 -Wall -Wextra -Wno-unknown-pragmas -Wstrict-overflow -Wcast-align -Wwrite-strings -Wformat=2 -Wformat-security"
 	fi
 
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$WARN_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "$?" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$WARN_RESULTS"
 	fi
@@ -1488,7 +2065,7 @@ fi
 if [ "$CXX" == "g++" ]; then
 
 	CLANG_COMPILER=$(which clang++)
-	"$CLANG_COMPILER" -x c++ -c adhoc.cpp.proto -c -o $TMP/adhoc > /dev/null 2>&1
+	"$CLANG_COMPILER" -x c++ -DCRYPTOPP_ADHOC_MAIN adhoc.cpp.proto -o $TMP/adhoc > /dev/null 2>&1
 	if [ "$?" -eq "0" ]; then
 
 		############################################
@@ -1499,9 +2076,16 @@ if [ "$CXX" == "g++" ]; then
 		echo
 
 		unset CXXFLAGS
+<<<<<<< HEAD
 		$MAKE clean > /dev/null 2>&1
 
 		$MAKE CXX="$CLANG_COMPILER" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+=======
+		"$MAKE" clean > /dev/null 2>&1
+		rm -f adhoc.cpp > /dev/null 2>&1
+
+		"$MAKE" "${MAKEARGS[@]}" CXX="$CLANG_COMPILER" static dynamic cryptest.exe 2>&1 | tee -a "$TEST_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 		if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 			echo "ERROR: failed to make cryptest.exe" | tee -a "$TEST_RESULTS"
 		else
@@ -1527,19 +2111,32 @@ if [ "$IS_CYGWIN" -eq "0" ] && [ "$IS_MINGW" -eq "0" ]; then
 	echo
 
 	unset CXXFLAGS
+<<<<<<< HEAD
 	$MAKE clean > /dev/null 2>&1
+=======
+	"$MAKE" clean > /dev/null 2>&1
+	rm -f adhoc.cpp > /dev/null 2>&1
+>>>>>>> refs/remotes/weidai11/master
 	
 	INSTALL_DIR="/tmp/cryptopp_test"
 	rm -rf "$INSTALL_DIR" > /dev/null 2>&1
 
 	export CXXFLAGS="-DNDEBUG -g2 -O2 -DCRYPTOPP_DATA_DIR='\"$INSTALL_DIR/share/cryptopp/\"'"
+<<<<<<< HEAD
 	$MAKE static dynamic cryptest.exe 2>&1 | tee -a "$INSTALL_RESULTS"
+=======
+	"$MAKE" "${MAKEARGS[@]}" static dynamic cryptest.exe 2>&1 | tee -a "$INSTALL_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
 		echo "ERROR: failed to make cryptest.exe" | tee -a "$INSTALL_RESULTS"
 	else
 		# Still need to manulally place TestData and TestVectors
 		OLD_DIR=$(pwd)
+<<<<<<< HEAD
 		$MAKE install PREFIX="$INSTALL_DIR" 2>&1 | tee -a "$INSTALL_RESULTS"
+=======
+		"$MAKE" "${MAKEARGS[@]}" install PREFIX="$INSTALL_DIR" 2>&1 | tee -a "$INSTALL_RESULTS"
+>>>>>>> refs/remotes/weidai11/master
 		cd "$INSTALL_DIR/bin"
 
 		echo
@@ -1578,7 +2175,48 @@ if [ "$IS_CYGWIN" -eq "0" ] && [ "$IS_MINGW" -eq "0" ]; then
 			echo "ERROR: failed to provide help" | tee -a "$INSTALL_RESULTS"
 		fi
 
+		# Restore original PWD
 		cd "$OLD_DIR"
+	fi
+fi
+
+############################################
+# Test a remove with CRYPTOPP_DATA_DIR
+if [ "$IS_CYGWIN" -eq "0" ] && [ "$IS_MINGW" -eq "0" ]; then
+
+	echo
+	echo "************************************" | tee -a "$INSTALL_RESULTS"
+	echo "Testing: Test remove with data directory" | tee -a "$INSTALL_RESULTS"
+	echo
+
+	"$MAKE" "${MAKEARGS[@]}" remove PREFIX="$INSTALL_DIR" 2>&1 | tee -a "$INSTALL_RESULTS"
+	if [ "${PIPESTATUS[0]}" -ne "0" ]; then
+		echo "ERROR: failed to make remove" | tee -a "$INSTALL_RESULTS"
+	else
+		# Test for complete removal
+		if [ -d "$INSTALL_DIR/include/cryptopp" ]; then
+			echo "ERROR: failed to remove cryptopp include directory" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ -d "$INSTALL_DIR/share/cryptopp" ]; then
+			echo "ERROR: failed to remove cryptopp share directory" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ -d "$INSTALL_DIR/share/cryptopp/TestData" ]; then
+			echo "ERROR: failed to remove cryptopp test data directory" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ -d "$INSTALL_DIR/share/cryptopp/TestVector" ]; then
+			echo "ERROR: failed to remove cryptopp test vector directory" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ -e "$INSTALL_DIR/bin/cryptest.exe" ]; then
+			echo "ERROR: failed to remove cryptest.exe program" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ -e "$INSTALL_DIR/lib/libcryptopp.a" ]; then
+			echo "ERROR: failed to remove libcryptopp.a static library" | tee -a "$INSTALL_RESULTS"
+		fi
+		if [ "$IS_DARWIN" -ne "0" ] && [ -e "$INSTALL_DIR/lib/libcryptopp.dylib" ]; then
+			echo "ERROR: failed to remove libcryptopp.dylib dynamic library" | tee -a "$INSTALL_RESULTS"
+		elif [ -e "$INSTALL_DIR/lib/libcryptopp.so" ]; then
+			echo "ERROR: failed to remove libcryptopp.so dynamic library" | tee -a "$INSTALL_RESULTS"
+		fi
 	fi
 fi
 
@@ -1587,6 +2225,7 @@ fi
 
 TEST_END=$(date)
 
+echo
 echo "************************************************" | tee -a "$TEST_RESULTS"
 echo "************************************************" | tee -a "$TEST_RESULTS"
 echo | tee -a "$TEST_RESULTS"
@@ -1595,7 +2234,7 @@ echo "Testing started: $TEST_BEGIN" | tee -a "$TEST_RESULTS"
 echo "Testing finished: $TEST_END" | tee -a "$TEST_RESULTS"
 echo | tee -a "$TEST_RESULTS"
 
-COUNT=$(grep -a "Testing: " cryptest-result.txt | wc -l)
+COUNT=$(grep -a 'Testing:' "$TEST_RESULTS" | wc -l)
 if [ "$COUNT" -eq "0" ]; then
 	echo "No configurations tested" | tee -a "$TEST_RESULTS"
 else
@@ -1608,27 +2247,27 @@ echo | tee -a "$TEST_RESULTS"
 # "Error" is from the GNU assembler
 # "error" is from the sanitizers
 # "Illegal", "0 errors" and "suppressed errors" are from Valgrind.
-ECOUNT=$(egrep -a '(Error|ERROR|error|FAILED|Illegal)' cryptest-result.txt | egrep -v '( 0 errors|suppressed errors|memory error detector)' | wc -l)
+ECOUNT=$(egrep -a '(Error|ERROR|error|FAILED|Illegal)' $TEST_RESULTS | egrep -v '( 0 errors|suppressed errors|error detector)' | wc -l)
 if [ "$ECOUNT" -eq "0" ]; then
 	echo "No failures detected" | tee -a "$TEST_RESULTS"
 else
-	echo "$ECOUNT errors detected" | tee -a "$TEST_RESULTS"
+	echo "$ECOUNT errors detected. See $TEST_RESULTS for details" | tee -a "$TEST_RESULTS"
 	echo
-	egrep -an '(Error|ERROR|error|FAILED|Illegal)' cryptest-result.txt | egrep -v '( 0 errors|suppressed errors|memory error detector)'
+	egrep -an '(Error|ERROR|error|FAILED|Illegal)' "$TEST_RESULTS" | egrep -v '( 0 errors|suppressed errors|error detector)'
 fi
 echo | tee -a "$TEST_RESULTS"
 
 # Write warnings to $TEST_RESULTS
-WCOUNT=$(egrep -a '(warning:)' cryptest-warn.txt | grep -v 'deprecated-declarations' | wc -l)
+WCOUNT=$(egrep -a '(warning:)' $WARN_RESULTS | grep -v 'deprecated-declarations' | wc -l)
 if [ "$WCOUNT" -eq "0" ]; then
 	echo "No warnings detected" | tee -a "$TEST_RESULTS"
 else
-	echo "$WCOUNT warnings detected" | tee -a "$TEST_RESULTS"
+	echo "$WCOUNT warnings detected. See $WARN_RESULTS for details" | tee -a "$TEST_RESULTS"
 	echo
-	egrep -an '(warning:)' cryptest-warn.txt | grep -v 'deprecated-declarations'
+#	egrep -an '(warning:)' $WARN_RESULTS | grep -v 'deprecated-declarations'
 fi
 echo | tee -a "$TEST_RESULTS"
-	
+
 echo "************************************************" | tee -a "$TEST_RESULTS"
 echo "************************************************" | tee -a "$TEST_RESULTS"
 
@@ -1638,6 +2277,3 @@ if [ "$ECOUNT" -eq "0" ]; then
 else
 	exit 1
 fi
-
-# Restore
-CRYPTOPP_DATA_DIR="$OLD_CRYPTOPP_DATA_DIR"

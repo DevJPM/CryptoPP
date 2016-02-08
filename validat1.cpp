@@ -197,8 +197,9 @@ bool TestSettings()
 	}
 
 #ifdef CRYPTOPP_ALLOW_UNALIGNED_DATA_ACCESS
+	// Don't assert the alignment of testvals. That's what this test is for.
 	byte testvals[10] = {1,2,2,3,3,3,3,2,2,1};
-	if (*(word32 *)(testvals+3) == 0x03030303 && *(word64 *)(testvals+1) == W64LIT(0x0202030303030202))
+	if (*(word32 *)(void *)(testvals+3) == 0x03030303 && *(word64 *)(void *)(testvals+1) == W64LIT(0x0202030303030202))
 		cout << "passed:  Your machine allows unaligned data access.\n";
 	else
 	{
@@ -1058,6 +1059,7 @@ bool TestRDRAND()
 		else
 			cout << "passed:";
 
+		// Coverity finding, also see http://stackoverflow.com/a/34509163/608639.
 		StreamState ss(cout);
 		cout << std::setiosflags(std::ios::fixed) << std::setprecision(6);
 		cout << "  Maurer Randomness Test returned value " << mv << endl;
@@ -1105,8 +1107,9 @@ bool TestRDRAND()
 #if (CRYPTOPP_BOOL_X86 || CRYPTOPP_BOOL_X32 || CRYPTOPP_BOOL_X64)
 bool TestRDSEED()
 {
-	// Testing on 6th generation i7 shows RDSEED needs about 128 retries for 10K bytes.
-	RDSEED rdseed(128);
+	// Testing on 5th generation i5 shows RDSEED needs about 128 retries for 10K bytes
+	//  on 64-bit/amd64 VM, and it needs more for an 32-bit/i686 VM.
+	RDSEED rdseed(256);
 	bool entropy = true, compress = true, discard = true;
 	static const unsigned int SIZE = 10000;
 
@@ -1135,6 +1138,7 @@ bool TestRDSEED()
 		else
 			cout << "passed:";
 
+		// Coverity finding, also see http://stackoverflow.com/a/34509163/608639.
 		StreamState ss(cout);
 		cout << std::setiosflags(std::ios::fixed) << std::setprecision(6);
 		cout << "  Maurer Randomness Test returned value " << mv << endl;

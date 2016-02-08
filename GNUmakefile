@@ -1,3 +1,7 @@
+###########################################################
+#####                General Variables                #####
+###########################################################
+
 # Base CXXFLAGS used if the user did not specify them
 CXXFLAGS ?= -DNDEBUG -g2 -O2
 
@@ -14,8 +18,10 @@ LN ?= ln -sf
 LDCONF ?= /sbin/ldconfig -n
 
 UNAME := $(shell uname)
-IS_X86 := $(shell uname -m | $(EGREP) -i -c "i.86|x86|i86|amd64")
+IS_X86 := $(shell uname -m | $(EGREP) -v "x86_64" | $(EGREP) -i -c "i.86|x86|i86")
+IS_X32 ?= 0
 IS_X86_64 := $(shell uname -m | $(EGREP) -i -c "(_64|d64)")
+IS_PPC := $(shell uname -m | $(EGREP) -i -c "ppc|power")
 IS_AARCH64 := $(shell uname -m | $(EGREP) -i -c "aarch64")
 
 IS_SUN := $(shell uname | $(EGREP) -i -c "SunOS")
@@ -61,7 +67,11 @@ ifeq ($(ARFLAGS),rv)
 ARFLAGS = r
 endif
 
-ifeq ($(IS_X86),1)
+###########################################################
+#####               X86/X32/X64 Options               #####
+###########################################################
+
+ifneq ($(IS_X86)$(IS_X32)$(IS_X86_64),000)
 
 IS_GCC_29 := $(shell $(CXX) -v 2>&1 | $(EGREP) -i -c gcc-9[0-9][0-9])
 GCC42_OR_LATER := $(shell $(CXX) -v 2>&1 | $(EGREP) -i -c "gcc version (4\.[2-9]|[5-9]\.)")
@@ -74,13 +84,10 @@ GAS210_OR_LATER := $(shell $(CXX) -xc -c /dev/null -Wa,-v -o/dev/null 2>&1 | $(E
 GAS217_OR_LATER := $(shell $(CXX) -xc -c /dev/null -Wa,-v -o/dev/null 2>&1 | $(EGREP) -c "GNU assembler version (2\.1[7-9]|2\.[2-9]|[3-9])")
 GAS219_OR_LATER := $(shell $(CXX) -xc -c /dev/null -Wa,-v -o/dev/null 2>&1 | $(EGREP) -c "GNU assembler version (2\.19|2\.[2-9]|[3-9])")
 
-# Add -fPIC for x86_64, but not X32, Cygwin or MinGW
-ifneq ($(IS_X86_64),0)
- IS_X32 := $(shell $(CXX) -dM -E - < /dev/null 2>&1 | $(EGREP) -c "ILP32")
- ifeq ($(IS_X32)$(IS_CYGWIN)$(IS_MINGW),000)
+# Add -fPIC for targets *except* X86, X32, Cygwin or MinGW
+ifeq ($(IS_X86)$(IS_X32)$(IS_CYGWIN)$(IS_MINGW),0000)
  ifeq ($(findstring -fPIC,$(CXXFLAGS)),)
    CXXFLAGS += -fPIC
- endif
  endif
 endif
 
@@ -136,20 +143,35 @@ CXXFLAGS += -Wa,--divide	# allow use of "/" operator
 endif
 endif
 
-else	# Not IS_X86
-
-# Add PIC
-ifeq ($(findstring -fPIC,$(CXXFLAGS)),)
-  CXXFLAGS += -fPIC
-endif
- 
-endif	# IS_X86
-
 ifeq ($(UNAME),)	# for DJGPP, where uname doesn't exist
 CXXFLAGS += -mbnu210
 else ifneq ($(findstring -save-temps,$(CXXFLAGS)),-save-temps)
 CXXFLAGS += -pipe
 endif
+
+else
+
+###########################################################
+#####                 Not X86/X32/X64                 #####
+###########################################################
+
+# Add PIC
+ifeq ($(findstring -fPIC,$(CXXFLAGS)),)
+  CXXFLAGS += -fPIC
+endif
+
+# Add -pipe for everything except ARM
+ifneq ($(IS_PPC),0)
+ifeq ($(findstring -save-temps,$(CXXFLAGS)),)
+CXXFLAGS += -pipe
+endif
+endif
+
+endif	# IS_X86
+
+###########################################################
+#####                      Common                     #####
+###########################################################
 
 ifneq ($(IS_MINGW),0)
 LDLIBS += -lws2_32
@@ -162,17 +184,7 @@ ifeq ($(findstring -lgomp,$(LDLIBS)),)
 LDLIBS += -lgomp
 endif # LDLIBS
 endif # OpenMP
-ifneq ($(IS_X86_64),0)
-M32OR64 = -m64
-endif
 endif # IS_LINUX
-
-# And add it for ARM64, too
-ifneq ($(IS_AARCH64),0)
- ifeq ($(findstring -fPIC,$(CXXFLAGS)),)
-   CXXFLAGS += -fPIC
- endif
-endif
 
 ifneq ($(IS_DARWIN),0)
 AR = libtool
@@ -281,6 +293,28 @@ endif # LDFLAGS
 endif # MAKECMDGOALS
 endif # Dead code stripping
 
+# For Shared Objects, Diff, Dist/Zip rules
+LIB_VER := $(shell $(EGREP) "define CRYPTOPP_VERSION" config.h | cut -d" " -f 3)
+LIB_MAJOR := $(shell echo $(LIB_VER) | cut -c 1)
+LIB_MINOR := $(shell echo $(LIB_VER) | cut -c 2)
+LIB_PATCH := $(shell echo $(LIB_VER) | cut -c 3)
+
+ifeq ($(strip $(LIB_PATCH)),)
+LIB_PATCH := 0
+endif
+
+ifeq ($(HAS_SOLIB_VERSION),1)
+# Full version suffix for shared library
+SOLIB_VERSION_SUFFIX=.$(LIB_MAJOR).$(LIB_MINOR).$(LIB_PATCH)
+# Different patchlevels are compatible, minor versions are not
+SOLIB_COMPAT_SUFFIX=.$(LIB_MAJOR).$(LIB_MINOR)
+SOLIB_FLAGS=-Wl,-soname,libcryptopp.so$(SOLIB_COMPAT_SUFFIX)
+endif # HAS_SOLIB_VERSION
+
+###########################################################
+#####              Source and object files            #####
+###########################################################
+
 # List cryptlib.cpp first and cpu.cpp second in an attempt to tame C++ static initialization problems.
 #  The issue spills into POD data types of cpu.cpp due to the storage class of the bools, so cpu.cpp
 #  is the second candidate for explicit initialization order.
@@ -304,7 +338,7 @@ TESTOBJS := $(TESTSRCS:.cpp=.o)
 LIBOBJS := $(filter-out $(TESTOBJS),$(OBJS))
 
 # List cryptlib.cpp first in an attempt to tame C++ static initialization problems
-DLLSRCS := cryptlib.cpp algebra.cpp algparam.cpp asn.cpp basecode.cpp cbcmac.cpp channels.cpp des.cpp dessp.cpp dh.cpp dll.cpp dsa.cpp ec2n.cpp eccrypto.cpp ecp.cpp eprecomp.cpp files.cpp filters.cpp fips140.cpp fipstest.cpp gf2n.cpp gfpcrypt.cpp hex.cpp hmac.cpp integer.cpp iterhash.cpp misc.cpp modes.cpp modexppc.cpp mqueue.cpp nbtheory.cpp oaep.cpp osrng.cpp pch.cpp pkcspad.cpp pubkey.cpp queue.cpp randpool.cpp rdtables.cpp rijndael.cpp rng.cpp rsa.cpp sha.cpp simple.cpp skipjack.cpp strciphr.cpp trdlocal.cpp
+DLLSRCS := cryptlib.cpp cpu.cpp 3way.cpp adler32.cpp algebra.cpp algparam.cpp arc4.cpp asn.cpp authenc.cpp base32.cpp base64.cpp basecode.cpp bfinit.cpp blowfish.cpp blumshub.cpp camellia.cpp cast.cpp casts.cpp cbcmac.cpp ccm.cpp channels.cpp cmac.cpp crc.cpp default.cpp des.cpp dessp.cpp dh.cpp dh2.cpp dll.cpp dsa.cpp eax.cpp ec2n.cpp eccrypto.cpp ecp.cpp elgamal.cpp emsa2.cpp eprecomp.cpp esign.cpp files.cpp filters.cpp fips140.cpp gcm.cpp gf256.cpp gf2_32.cpp gf2n.cpp gfpcrypt.cpp gost.cpp gzip.cpp hex.cpp hmac.cpp hrtimer.cpp ida.cpp idea.cpp integer.cpp iterhash.cpp luc.cpp mars.cpp marss.cpp md2.cpp md4.cpp md5.cpp misc.cpp modes.cpp mqueue.cpp mqv.cpp nbtheory.cpp network.cpp oaep.cpp osrng.cpp panama.cpp pkcspad.cpp polynomi.cpp pssr.cpp pubkey.cpp queue.cpp rabin.cpp randpool.cpp rc2.cpp rc5.cpp rc6.cpp rdrand.cpp rdtables.cpp rijndael.cpp ripemd.cpp rng.cpp rsa.cpp rw.cpp safer.cpp salsa.cpp seal.cpp seed.cpp serpent.cpp sha.cpp sha3.cpp shacal2.cpp shark.cpp sharkbox.cpp skipjack.cpp socketft.cpp sosemanuk.cpp square.cpp squaretb.cpp strciphr.cpp tea.cpp tftables.cpp tiger.cpp tigertab.cpp trdlocal.cpp ttmac.cpp twofish.cpp vmac.cpp wait.cpp wake.cpp whrlpool.cpp xtr.cpp xtrcrypt.cpp zdeflate.cpp zinflate.cpp zlib.cpp winpipes.cpp 
 DLLOBJS := $(DLLSRCS:.cpp=.export.o)
 
 # Import lib testing
@@ -312,23 +346,9 @@ LIBIMPORTOBJS := $(LIBOBJS:.o=.import.o)
 TESTIMPORTOBJS := $(TESTOBJS:.o=.import.o)
 DLLTESTOBJS := dlltest.dllonly.o
 
-# For Shared Objects, Diff, Dist/Zip rules
-LIB_VER := $(shell $(EGREP) "define CRYPTOPP_VERSION" config.h | cut -d" " -f 3)
-LIB_MAJOR := $(shell echo $(LIB_VER) | cut -c 1)
-LIB_MINOR := $(shell echo $(LIB_VER) | cut -c 2)
-LIB_PATCH := $(shell echo $(LIB_VER) | cut -c 3)
-
-ifeq ($(strip $(LIB_PATCH)),)
-LIB_PATCH := 0
-endif
-
-ifeq ($(HAS_SOLIB_VERSION),1)
-# Full version suffix for shared library
-SOLIB_VERSION_SUFFIX=.$(LIB_MAJOR).$(LIB_MINOR).$(LIB_PATCH)
-# Different patchlevels are compatible, minor versions are not
-SOLIB_COMPAT_SUFFIX=.$(LIB_MAJOR).$(LIB_MINOR)
-SOLIB_FLAGS=-Wl,-soname,libcryptopp.so$(SOLIB_COMPAT_SUFFIX)
-endif # HAS_SOLIB_VERSION
+###########################################################
+#####                Targets and Recipes              #####
+###########################################################
 
 .PHONY: all
 all: cryptest.exe

@@ -408,13 +408,15 @@ public:
 	size_type max_size() const {return STDMAX(m_fallbackAllocator.max_size(), S);}
 
 private:
+
 #ifdef __BORLANDC__
 	T* GetAlignedArray() {return m_array;}
 	T m_array[S];
 #else
-	T* GetAlignedArray() {return (CRYPTOPP_BOOL_ALIGN16 && T_Align16) ? (T*)(((byte *)m_array) + (0-(size_t)m_array)%16) : m_array;}
+	T* GetAlignedArray() {return (CRYPTOPP_BOOL_ALIGN16 && T_Align16) ? (T*)(void *)(((byte *)m_array) + (0-(size_t)m_array)%16) : m_array;}
 	CRYPTOPP_ALIGN_DATA(8) T m_array[(CRYPTOPP_BOOL_ALIGN16 && T_Align16) ? S+8/sizeof(T) : S];
 #endif
+
 	A m_fallbackAllocator;
 	bool m_allocated;
 };
@@ -724,7 +726,7 @@ class SecByteBlock : public SecBlock<byte> {};
 class SecWordBlock : public SecBlock<word> {};
 //! \class AlignedSecByteBlock
 //! \brief SecBlock using \ref AllocatorWithCleanup "AllocatorWithCleanup<byte, true>" typedef
-class AlignedSecByteBlock SecBlock<byte, AllocatorWithCleanup<byte, true> > {};
+class AlignedSecByteBlock : public SecBlock<byte, AllocatorWithCleanup<byte, true> > {};
 #else
 typedef SecBlock<byte> SecByteBlock;
 typedef SecBlock<word> SecWordBlock;
